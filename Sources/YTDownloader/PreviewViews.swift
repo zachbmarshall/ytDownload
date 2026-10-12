@@ -24,10 +24,13 @@ struct TrimSlider: View {
     @Binding var start: Double
     @Binding var end: Double
     let duration: Double
-    let playhead: Double
+    /// Read inside a child view, so playhead ticks redraw only the playhead line.
+    let playhead: () -> Double
     var minimumLength: Double = 1
     /// Called while dragging so the player can show the frame under the handle.
     var onScrub: (Double) -> Void
+    /// Called when a drag ends, so the player can land on the exact frame.
+    var onScrubEnded: (Double) -> Void
 
     private let handleWidth: CGFloat = 14
     private let trackHeight: CGFloat = 36
@@ -51,6 +54,7 @@ struct TrimSlider: View {
                     .gesture(
                         DragGesture(minimumDistance: 0, coordinateSpace: .named("trim"))
                             .onChanged { v in onScrub(clamp(time(v.location.x), 0, duration)) }
+                            .onEnded { v in onScrubEnded(clamp(time(v.location.x), 0, duration)) }
                     )
 
                 // Dimmed regions outside the selection
@@ -73,12 +77,7 @@ struct TrimSlider: View {
                     .offset(x: x(start) - handleWidth)
                     .allowsHitTesting(false)
 
-                // Playhead
-                Rectangle()
-                    .fill(Color.primary)
-                    .frame(width: 2, height: trackHeight + 10)
-                    .offset(x: x(clamp(playhead, 0, duration)) - 1)
-                    .allowsHitTesting(false)
+                PlayheadLine(position: { x(clamp(playhead(), 0, duration)) }, height: trackHeight + 10)
 
                 handle(systemImage: "chevron.compact.left")
                     .offset(x: x(start) - handleWidth)
@@ -88,6 +87,7 @@ struct TrimSlider: View {
                                 start = clamp(time(v.location.x), 0, end - minimumLength)
                                 onScrub(start)
                             }
+                            .onEnded { _ in onScrubEnded(start) }
                     )
                     .help("Drag to set where the clip starts")
 
@@ -99,11 +99,16 @@ struct TrimSlider: View {
                                 end = clamp(time(v.location.x), start + minimumLength, duration)
                                 onScrub(end)
                             }
+                            .onEnded { _ in onScrubEnded(end) }
                     )
                     .help("Drag to set where the clip ends")
             }
             .frame(height: trackHeight + 10)
             .coordinateSpace(name: "trim")
+            #if DEBUG
+            .onAppear { DebugHooks.trimFrame = geo.frame(in: .global) }
+            .onChange(of: geo.frame(in: .global)) { _, f in DebugHooks.trimFrame = f }
+            #endif
         }
         .frame(height: trackHeight + 10)
     }
@@ -121,6 +126,49 @@ struct TrimSlider: View {
 
     private func clamp(_ v: Double, _ lo: Double, _ hi: Double) -> Double {
         min(max(v, lo), max(lo, hi))
+    }
+}
+
+/// The playhead marker. Its own view so frequent time updates only redraw this line.
+private struct PlayheadLine: View {
+    let position: () -> CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary)
+            .frame(width: 2, height: height)
+            .offset(x: position() - 1)
+            .allowsHitTesting(false)
+    }
+}
+
+private struct PlayheadLabel: View {
+    let model: AppModel
+
+    var body: some View {
+        Text("Playhead \(TimeFormat.string(model.currentTime))")
+            .font(.callout.monospacedDigit())
+            .foregroundStyle(.secondary)
+    }
+}
+
+/// While the real preview starts, shows YouTube's low-res storyboard frame for the playhead,
+/// so dragging the trim handles gives instant visual feedback.
+private struct StoryboardPreview<Fallback: View>: View {
+    let model: AppModel
+    @ViewBuilder let fallback: () -> Fallback
+
+    var body: some View {
+        if model.currentTime > 0, let frame = model.storyboardFrame(at: model.currentTime) {
+            Image(decorative: frame, scale: 1)
+                .resizable()
+                .interpolation(.medium)
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            fallback()
+        }
     }
 }
 
@@ -162,20 +210,42 @@ struct PreviewSection: View {
 
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(Color.black)
+                // The player view stays in the hierarchy the whole time. Inserting an AppKit view
+                // while the user is dragging a trim handle cancels the drag, so loading/fallback
+                // states are drawn as overlays on top of it instead.
+                PlayerView(player: model.player)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                 switch model.previewState {
                 case .ready:
-                    PlayerView(player: model.player)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    EmptyView()
                 case .loading:
-                    thumbnail(message: nil).opacity(0.5)
-                    VStack(spacing: 8) {
-                        ProgressView().controlSize(.large)
-                        Text("Loading preview…").foregroundStyle(.white)
+                    ZStack(alignment: .topTrailing) {
+                        Color.black
+                        StoryboardPreview(model: model) { thumbnail(message: nil) }
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Loading video…")
+                        }
+                        .font(.callout)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.black.opacity(0.7), in: Capsule())
+                        .padding(10)
                     }
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                 case .failed:
-                    thumbnail(message: "The preview couldn't be loaded. You can still download the video or a clip.", retry: true)
+                    ZStack {
+                        Color.black
+                        thumbnail(message: "The preview couldn't be loaded. You can still download the video or a clip.", retry: true)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                 case .unavailable:
-                    thumbnail(message: "No preview is available for this video. You can still download it.")
+                    ZStack {
+                        Color.black
+                        thumbnail(message: "No preview is available for this video. You can still download it.")
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }
             .aspectRatio(16 / 9, contentMode: .fit)
@@ -240,9 +310,7 @@ struct PreviewSection: View {
                     .toggleStyle(.switch)
                     .disabled(!model.canTrim)
                     Spacer()
-                    Text("Playhead \(TimeFormat.string(model.currentTime))")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    PlayheadLabel(model: model)
                 }
 
                 if !model.canTrim {
@@ -253,8 +321,9 @@ struct PreviewSection: View {
                         start: $model.clipStart,
                         end: $model.clipEnd,
                         duration: model.duration,
-                        playhead: model.currentTime,
-                        onScrub: { model.scrub(to: $0) }
+                        playhead: { model.currentTime },
+                        onScrub: { model.scrub(to: $0) },
+                        onScrubEnded: { model.scrub(to: $0, final: true) }
                     )
 
                     HStack(alignment: .bottom) {

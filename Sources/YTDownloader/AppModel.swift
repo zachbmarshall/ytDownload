@@ -28,12 +28,18 @@ final class AppModel {
     var previewState: PreviewState = .unavailable
     var previewAvailable: Bool { previewState == .ready }
     private var previewTask: Task<Void, Never>?
+    private var storyboard: Storyboard?
+    private var storyboardSheets: [Int: CGImage] = [:]
+    private var storyboardTask: Task<Void, Never>?
     var trimEnabled = false
     var clipStart: Double = 0
     var clipEnd: Double = 0
     var loopClip = false
     private var playingClip = false
     private var timeObserver: Any?
+    // "Chase" seeking: at most one seek in flight; newer targets wait for it to finish.
+    private var pendingSeek: (time: CMTime, exact: Bool)?
+    private var isSeeking = false
 
     var duration: Double { info?.duration ?? 0 }
     var clipLength: Double { max(0, clipEnd - clipStart) }
@@ -97,6 +103,7 @@ final class AppModel {
         }
         player.pause()
         previewTask?.cancel()
+        loadStoryboard(nil)
         player.replaceCurrentItem(with: nil)
         previewState = .unavailable
         info = nil
@@ -143,12 +150,48 @@ final class AppModel {
         currentTime = 0
         if let h = maxHeight, !info.videoHeights.contains(h) { maxHeight = nil }
 
+        loadStoryboard(info.storyboard)
         loadPreview()
     }
 
-    /// Loads the preview into the player. Freshly issued YouTube stream URLs often fail to open
-    /// for the first few seconds, so each candidate is retried with a short backoff before
-    /// falling back to the next one.
+    // MARK: - Storyboard
+
+    private func loadStoryboard(_ board: Storyboard?) {
+        storyboardTask?.cancel()
+        storyboard = board
+        storyboardSheets = [:]
+        guard let board else { return }
+        storyboardTask = Task { [weak self] in
+            await withTaskGroup(of: (Int, CGImage?).self) { group in
+                for (i, sheet) in board.sheets.enumerated() {
+                    group.addTask {
+                        guard let (data, _) = try? await URLSession.shared.data(from: sheet.url),
+                              let image = NSImage(data: data) else { return (i, nil) }
+                        return (i, image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+                    }
+                }
+                for await (i, image) in group {
+                    guard let self, !Task.isCancelled else { return }
+                    if let image { self.storyboardSheets[i] = image }
+                }
+            }
+        }
+    }
+
+    /// The low-res storyboard frame for time `t`, if its sheet has loaded.
+    func storyboardFrame(at t: Double) -> CGImage? {
+        guard let board = storyboard, let tile = board.tile(at: t),
+              let sheet = storyboardSheets[tile.sheet] else { return nil }
+        let w = sheet.width / board.columns, h = sheet.height / board.rows
+        let rect = CGRect(x: (tile.index % board.columns) * w, y: (tile.index / board.columns) * h, width: w, height: h)
+        return sheet.cropping(to: rect)
+    }
+
+    /// Loads the preview into the player.
+    ///
+    /// YouTube rejects a freshly issued stream URL (HTTP 403) for the first few seconds. Rather than
+    /// letting AVPlayer fail and backing off, each candidate is probed with a tiny range request and
+    /// handed to the player as soon as the server accepts it.
     func loadPreview() {
         previewTask?.cancel()
         let sources = info?.previewSources ?? []
@@ -159,11 +202,15 @@ final class AppModel {
         previewState = .loading
         previewTask = Task { [weak self] in
             for source in sources {
-                for delay in [0.0, 1.5, 3.0] {
-                    if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                guard await Self.waitUntilReachable(source) else { continue }
+                // Usually opens first time once reachable; one quick retry covers stragglers.
+                for attempt in 0..<2 {
+                    if attempt > 0 { try? await Task.sleep(for: .seconds(0.5)) }
                     guard let self, !Task.isCancelled else { return }
                     if await self.tryPreview(source) {
                         self.previewState = .ready
+                        // Show whatever the user picked while the preview was loading.
+                        if self.currentTime > 0 { self.seek(to: self.currentTime) }
                         return
                     }
                 }
@@ -172,6 +219,23 @@ final class AppModel {
             self.player.replaceCurrentItem(with: nil)
             self.previewState = .failed
         }
+    }
+
+    /// Polls the stream URL until the server answers with a success status (or gives up).
+    private nonisolated static func waitUntilReachable(_ source: PreviewSource, timeout: Double = 15) async -> Bool {
+        var request = URLRequest(url: source.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        if let ua = source.headers["User-Agent"] { request.setValue(ua, forHTTPHeaderField: "User-Agent") }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, !Task.isCancelled {
+            if let (_, response) = try? await URLSession.shared.data(for: request),
+               let status = (response as? HTTPURLResponse)?.statusCode {
+                if (200..<300).contains(status) { return true }
+                if status != 403 { return false }   // 403 = not active yet; anything else won't recover
+            }
+            try? await Task.sleep(for: .milliseconds(400))
+        }
+        return false
     }
 
     private func tryPreview(_ source: PreviewSource) async -> Bool {
@@ -194,7 +258,6 @@ final class AppModel {
         if let group = try? await asset.loadMediaSelectionGroup(for: .legible) {
             item.select(nil, in: group)
         }
-        if currentTime > 0 { seek(to: currentTime) }
         return true
     }
 
@@ -202,8 +265,10 @@ final class AppModel {
 
     private func tick(_ t: Double) {
         guard t.isFinite else { return }
-        currentTime = t
         isPlaying = player.rate != 0
+        // While seeking, the player still reports the old position; keep the target instead.
+        guard !isSeeking else { return }
+        currentTime = t
         if playingClip && trimEnabled && t >= clipEnd {
             if loopClip {
                 seek(to: clipStart)
@@ -215,16 +280,46 @@ final class AppModel {
         }
     }
 
-    func seek(to seconds: Double) {
-        let t = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-        player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+    /// Seeks the preview. `exact: false` allows snapping to a nearby keyframe, which is far
+    /// cheaper for streamed video and is used while dragging; the final position is exact.
+    ///
+    /// Issuing a new seek cancels the one in flight, so firing one per drag event means none
+    /// ever finishes and the picture freezes. Instead, only one seek runs at a time and the
+    /// latest target is applied when it completes (Apple Technical Q&A QA1820).
+    func seek(to seconds: Double, exact: Bool = true) {
         currentTime = seconds
+        // Until the preview is ready, just remember the position; it's applied once loaded.
+        guard previewState == .ready else { return }
+        pendingSeek = (CMTime(seconds: max(0, seconds), preferredTimescale: 600), exact)
+        if !isSeeking { startNextSeek() }
+    }
+
+    private func startNextSeek() {
+        guard let next = pendingSeek else {
+            isSeeking = false
+            return
+        }
+        pendingSeek = nil
+        isSeeking = true
+        let tolerance = next.exact ? CMTime.zero : CMTime(seconds: 0.5, preferredTimescale: 600)
+        #if DEBUG
+        let issued = Date()
+        #endif
+        player.seek(to: next.time, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] finished in
+            #if DEBUG
+            DebugHooks.seekLog.append((issued, Date(), finished))
+            #endif
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.startNextSeek() }
+            }
+        }
     }
 
     /// Seek triggered by the user dragging on the timeline; cancels clip-only playback.
-    func scrub(to seconds: Double) {
+    /// Pass `final: true` when the drag ends to land on the exact frame.
+    func scrub(to seconds: Double, final: Bool = false) {
         playingClip = false
-        seek(to: seconds)
+        seek(to: seconds, exact: final)
     }
 
     func togglePlay() {

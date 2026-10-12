@@ -24,6 +24,17 @@ struct VideoInfo: Decodable {
         let height: Int?
         let `protocol`: String?
         let httpHeaders: [String: String]?
+        // Storyboard (thumbnail sprite sheet) fields
+        let width: Int?
+        let rows: Int?
+        let columns: Int?
+        let fps: Double?
+        let fragments: [Fragment]?
+
+        struct Fragment: Decodable {
+            let url: String?
+            let duration: Double?
+        }
 
         var hasVideo: Bool { (vcodec ?? "none") != "none" }
         var hasAudio: Bool { (acodec ?? "none") != "none" }
@@ -37,6 +48,25 @@ struct VideoInfo: Decodable {
     var videoHeights: [Int] {
         let heights = (formats ?? []).filter(\.hasVideo).compactMap(\.height).filter { $0 >= 144 }
         return Array(Set(heights)).sorted(by: >)
+    }
+
+    /// YouTube's storyboard: low-res frames packed into sprite sheets. These load instantly,
+    /// so they can show the frame under the trim handles while the real preview is starting.
+    var storyboard: Storyboard? {
+        let candidates = (formats ?? []).filter {
+            $0.formatId.hasPrefix("sb") && ($0.rows ?? 0) > 0 && ($0.columns ?? 0) > 0
+                && ($0.fps ?? 0) > 0 && !($0.fragments ?? []).isEmpty
+        }
+        guard let best = candidates.max(by: { ($0.width ?? 0) < ($1.width ?? 0) }) else { return nil }
+        var start = 0.0
+        var sheets: [Storyboard.Sheet] = []
+        for fragment in best.fragments ?? [] {
+            guard let s = fragment.url, let url = URL(string: s) else { return nil }
+            let duration = fragment.duration ?? 0
+            sheets.append(.init(url: url, start: start, duration: duration))
+            start += duration
+        }
+        return Storyboard(sheets: sheets, rows: best.rows!, columns: best.columns!, fps: best.fps!)
     }
 
     /// Streams AVPlayer can play for the in-app preview, best first:
@@ -60,6 +90,25 @@ struct VideoInfo: Decodable {
         let audioOnly = http.first { !$0.hasVideo && $0.hasAudio && $0.ext == "m4a" }
         add(audioOnly, url: audioOnly?.url, video: false, audio: true)
         return sources
+    }
+}
+
+struct Storyboard {
+    struct Sheet {
+        let url: URL
+        let start: Double
+        let duration: Double
+    }
+    let sheets: [Sheet]
+    let rows: Int
+    let columns: Int
+    let fps: Double
+
+    /// Which sheet and which tile (row-major index) shows time `t`.
+    func tile(at t: Double) -> (sheet: Int, index: Int)? {
+        guard let sheetIndex = sheets.lastIndex(where: { $0.start <= t }) ?? (sheets.isEmpty ? nil : 0) else { return nil }
+        let local = max(0, t - sheets[sheetIndex].start)
+        return (sheetIndex, min(Int(local * fps), rows * columns - 1))
     }
 }
 

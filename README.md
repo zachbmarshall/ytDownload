@@ -11,30 +11,47 @@ A simple native macOS app (SwiftUI) that puts a friendly interface on [yt-dlp](h
 ## Requirements
 
 - macOS 14 (Sonoma) or newer
-- Xcode or the Command Line Tools (to build)
-- Homebrew packages:
+- Xcode 15.3 or newer, or just the Command Line Tools (Swift 5.10+). To install the Command Line Tools, run `xcode-select --install`.
+- [Homebrew](https://brew.sh), for the tools the app runs behind the scenes
 
-```bash
-brew install yt-dlp ffmpeg deno
-```
+## Build from source
 
-(`deno` is the JavaScript runtime yt-dlp uses to handle YouTube's player challenges.)
+1. Install the command line tools the app uses:
 
-## Build and run
+   ```bash
+   brew install yt-dlp ffmpeg deno
+   ```
 
-Build the `.app`:
+   (`deno` is the JavaScript runtime yt-dlp uses to handle YouTube's player challenges.)
 
-```bash
-./scripts/build-app.sh
-```
+2. Clone the repository:
 
-This creates `build/YT Downloader.app`. Drag it into `/Applications` if you want it there.
+   ```bash
+   git clone https://github.com/zachbmarshall/ytDownload.git
+   cd ytDownload
+   ```
 
-During development you can also just run:
+3. Build the app:
 
-```bash
-swift run
-```
+   ```bash
+   ./scripts/build-app.sh
+   ```
+
+   This compiles a release build, draws the icon, and creates `build/YT Downloader.app`. The first build takes a minute or two.
+
+4. Open it, or drag it into `/Applications`:
+
+   ```bash
+   open "build/YT Downloader.app"
+   ```
+
+To work on the code, `swift run` builds and launches a debug version directly. To open the project in Xcode, run `open Package.swift`.
+
+### Notes
+
+- The app is signed "ad hoc" for your own Mac only. If you copy the built `.app` to another Mac and macOS refuses to open it, right-click it and choose **Open**, or build it on that Mac instead.
+- If you get `permission denied` running the script, make it executable: `chmod +x scripts/build-app.sh`.
+- yt-dlp and ffmpeg aren't bundled. The app finds them in the usual Homebrew locations (`/opt/homebrew/bin`, `/usr/local/bin`). If they're missing, it shows a setup screen with the install command.
 
 ## Using clips
 

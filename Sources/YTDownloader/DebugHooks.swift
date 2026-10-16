@@ -51,6 +51,21 @@ enum DebugHooks {
             fflush(stdout)
             NSApp.terminate(nil)
         }
+        if args.contains("--update-test") {
+            print("VERSION BEFORE:", await YtDlpUpdater.currentVersion() ?? "nil", "at", Tools.ytdlp?.path ?? "nil")
+            if args.contains("--fail-first") {
+                // A failing fetch should trigger an update and annotate the error.
+                model.urlText = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
+                await model.fetch()
+                print("FETCH ERROR:", model.fetchError ?? "nil")
+                for _ in 0..<240 where !(model.fetchError ?? "").contains("newer yt-dlp") { try? await Task.sleep(for: .seconds(0.5)) }
+                print("FETCH ERROR AFTER:", model.fetchError ?? "nil")
+            }
+            print("MANUAL CHECK:", await YtDlpUpdater.update().message)
+            print("VERSION AFTER:", await YtDlpUpdater.currentVersion() ?? "nil")
+            fflush(stdout)
+            NSApp.terminate(nil)
+        }
         if args.contains("--immediate-drag-test") {
             // Mirrors the user's flow: link loaded → enable clip → drag the start handle right away.
             model.trimEnabled = true

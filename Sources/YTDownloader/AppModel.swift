@@ -129,6 +129,7 @@ final class AppModel {
             guard result.status == 0 else {
                 phase = .idle
                 fetchError = Self.friendlyError(result.stderr) ?? "yt-dlp exited with code \(result.status)."
+                checkForFixAfterFailure()
                 return
             }
             let data = result.stdout
@@ -475,9 +476,24 @@ final class AppModel {
                 etaText = ""
             } else {
                 phase = .failed(lastError ?? Self.friendlyError(result.stderr) ?? "yt-dlp exited with code \(result.status).")
+                checkForFixAfterFailure()
             }
         } catch {
             phase = .failed(error.localizedDescription)
+        }
+    }
+
+    /// yt-dlp failures are often fixed by a newer yt-dlp. Check for one in the background and,
+    /// if it was installed, say so on the error the user is looking at.
+    private func checkForFixAfterFailure() {
+        Task {
+            guard await YtDlpUpdater.updateAfterFailure() else { return }
+            let note = "\n\nThe app just installed a newer yt-dlp, which often fixes this. Please try again."
+            if let error = fetchError {
+                fetchError = error + note
+            } else if case .failed(let message) = phase {
+                phase = .failed(message + note)
+            }
         }
     }
 
@@ -556,7 +572,7 @@ final class AppModel {
         }
         if msg.contains("Video unavailable") { return "This video is unavailable (private, removed, or region-locked)." }
         if msg.contains("Sign in to confirm") {
-            return "YouTube is asking to sign in to confirm you're not a bot. Try again later or update yt-dlp (brew upgrade yt-dlp)."
+            return "YouTube is asking to sign in to confirm you're not a bot. Try again later, or update yt-dlp (YT Downloader > Check for yt-dlp Updates, or brew upgrade yt-dlp if you installed it with Homebrew)."
         }
         return msg
     }

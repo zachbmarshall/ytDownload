@@ -178,6 +178,8 @@ enum DebugHooks {
         if let out = value("--out") { model.outputFolder = URL(fileURLWithPath: out) }
         try? await Task.sleep(for: .seconds(2))
         snap()
+        print("TOOLS:", Tools.ytdlp?.path ?? "nil", "|", Tools.ffmpeg?.path ?? "nil", "| fetchError:", model.fetchError ?? "none", "| title:", model.info?.title ?? "nil")
+        fflush(stdout)
         if args.contains("--download") {
             Task { await model.download() }
             try? await Task.sleep(for: .seconds(0.5))

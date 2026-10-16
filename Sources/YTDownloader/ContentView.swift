@@ -2,14 +2,14 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var model = AppModel()
-    @State private var toolsMissing = Tools.ytdlp == nil || Tools.ffmpeg == nil
+    @State private var toolsMissing = Self.checkTools()
 
     var body: some View {
         VStack(spacing: 0) {
             URLBar(model: model)
             Divider()
             if toolsMissing {
-                MissingToolsView { toolsMissing = Tools.ytdlp == nil || Tools.ffmpeg == nil }
+                MissingToolsView { toolsMissing = Self.checkTools() }
             } else {
                 mainContent
             }
@@ -27,6 +27,11 @@ struct ContentView: View {
         }
     }
 
+    /// Bundled builds unpack yt-dlp on first launch, so it counts as present.
+    private static func checkTools() -> Bool {
+        (Tools.ytdlp == nil && !Tools.hasBundledTools) || Tools.ffmpeg == nil
+    }
+
     @ViewBuilder
     private var mainContent: some View {
         if model.info != nil {
@@ -42,7 +47,7 @@ struct ContentView: View {
         } else if model.phase == .fetching {
             VStack(spacing: 12) {
                 ProgressView()
-                Text("Fetching video info…").foregroundStyle(.secondary)
+                Text(model.statusText).foregroundStyle(.secondary)
                 Button("Cancel") { model.cancel() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

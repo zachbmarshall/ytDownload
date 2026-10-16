@@ -1,7 +1,11 @@
 import Foundation
 
-/// Locates the command line tools the app depends on. Apps launched from Finder get a
-/// minimal PATH, so we search the usual Homebrew / MacPorts / pip locations explicitly.
+/// Locates the command line tools the app depends on.
+///
+/// DMG builds carry ffmpeg, ffprobe and deno in `Contents/Helpers`, and yt-dlp as a zip in
+/// `Contents/Resources` that is unpacked to Application Support on first launch, where it can
+/// update itself (see YtDlpUpdater). Otherwise the tools come from Homebrew etc.; apps launched from Finder get a
+/// minimal PATH, so the usual locations are searched explicitly.
 enum Tools {
     static let searchDirectories: [String] = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -15,28 +19,51 @@ enum Tools {
         ]
     }()
 
+    static let helpersDirectory = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers")
+    static let bundledYtdlpArchive = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/yt-dlp_macos.zip")
+    static let bundledYtdlpVersionFile = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/yt-dlp-version.txt")
+    static let managedYtdlpDirectory = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("YT Downloader/yt-dlp")
+    static let managedYtdlp = managedYtdlpDirectory.appendingPathComponent("yt-dlp_macos")
+
+    static var hasBundledTools: Bool { FileManager.default.fileExists(atPath: bundledYtdlpArchive.path) }
+
     static func find(_ name: String) -> URL? {
+        let bundled = helpersDirectory.appendingPathComponent(name)
+        if isExecutable(bundled) { return bundled }
         let envPath = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").map(String.init) ?? []
         for dir in searchDirectories + envPath {
             let candidate = URL(fileURLWithPath: dir).appendingPathComponent(name)
-            if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                return candidate
-            }
+            if isExecutable(candidate) { return candidate }
         }
         return nil
     }
 
-    static var ytdlp: URL? { find("yt-dlp") }
+    static var ytdlp: URL? {
+        if isExecutable(managedYtdlp) { return managedYtdlp }
+        return find("yt-dlp")
+    }
+
     static var ffmpeg: URL? { find("ffmpeg") }
 
-    /// Environment for child processes: extended PATH so yt-dlp can find ffmpeg and a
-    /// JavaScript runtime (deno/node), which YouTube extraction needs.
+    /// Environment for child processes: bundled helpers first on PATH, so yt-dlp finds ffprobe
+    /// and the deno JavaScript runtime (which YouTube extraction needs).
     static var environment: [String: String] {
         var env = ProcessInfo.processInfo.environment
         let existing = env["PATH"] ?? ""
-        env["PATH"] = (searchDirectories + [existing]).joined(separator: ":")
+        env["PATH"] = ([helpersDirectory.path] + searchDirectories + [existing]).joined(separator: ":")
         env["PYTHONUNBUFFERED"] = "1"
+        // Standalone ffmpeg builds don't know where macOS keeps trusted certificates, so HTTPS
+        // (used when downloading clips) fails without this. Homebrew's ffmpeg works either way.
+        if env["SSL_CERT_FILE"] == nil, FileManager.default.fileExists(atPath: "/etc/ssl/cert.pem") {
+            env["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
+        }
         return env
+    }
+
+    private static func isExecutable(_ url: URL) -> Bool {
+        FileManager.default.isExecutableFile(atPath: url.path)
     }
 }
 

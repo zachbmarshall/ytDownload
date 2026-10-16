@@ -1,7 +1,12 @@
 #!/bin/zsh
 # Builds a release binary and wraps it in "YT Downloader.app".
+#   --bundle-tools   also copy yt-dlp, ffmpeg, ffprobe and deno from build/vendor
+#                    (see scripts/fetch-tools.sh) into the app, so it needs no Homebrew.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+BUNDLE_TOOLS=false
+[[ "${1:-}" == "--bundle-tools" ]] && BUNDLE_TOOLS=true
 
 APP_NAME="YT Downloader"
 APP="build/$APP_NAME.app"
@@ -40,7 +45,22 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc sign so macOS will launch it locally.
-codesign --force --deep --sign - "$APP"
+if $BUNDLE_TOOLS; then
+    VENDOR="build/vendor"
+    if [[ ! -f "$VENDOR/.complete" ]]; then
+        echo "No tools in $VENDOR. Run scripts/fetch-tools.sh first." >&2
+        exit 1
+    fi
+    HELPERS="$APP/Contents/Helpers"
+    mkdir -p "$HELPERS"
+    cp "$VENDOR/ffmpeg" "$VENDOR/ffprobe" "$VENDOR/deno" "$HELPERS/"
+    # yt-dlp ships zipped; the app unpacks it to Application Support on first launch,
+    # where it can also update itself.
+    cp "$VENDOR/yt-dlp_macos.zip" "$VENDOR/yt-dlp-version.txt" "$APP/Contents/Resources/"
+fi
+
+# Ad-hoc sign so macOS will launch it. Not --deep: the bundled ffmpeg and deno keep their
+# publishers' signatures.
+codesign --force --sign - "$APP"
 
 echo "Built: $PWD/$APP"

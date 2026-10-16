@@ -97,6 +97,11 @@ final class AppModel {
     func fetch() async {
         let url = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return }
+        if Tools.hasBundledTools && Tools.ytdlp == nil {
+            phase = .fetching
+            statusText = "Setting up yt-dlp (first launch only)…"
+        }
+        await YtDlpUpdater.ensureReady()
         guard let ytdlp = Tools.ytdlp else {
             fetchError = "yt-dlp was not found. Install it with: brew install yt-dlp"
             return
@@ -433,6 +438,7 @@ final class AppModel {
     }
 
     func download() async {
+        await YtDlpUpdater.ensureReady()
         guard let ytdlp = Tools.ytdlp, let ffmpeg = Tools.ffmpeg else {
             phase = .failed("yt-dlp and ffmpeg are required. Install them with: brew install yt-dlp ffmpeg")
             return

@@ -53,6 +53,22 @@ To work on the code, `swift run` builds and launches a debug version directly. T
 - If you get `permission denied` running the script, make it executable: `chmod +x scripts/build-app.sh`.
 - yt-dlp and ffmpeg aren't bundled. The app finds them in the usual Homebrew locations (`/opt/homebrew/bin`, `/usr/local/bin`). If they're missing, it shows a setup screen with the install command.
 
+## Make a DMG to share
+
+To give the app to someone who doesn't have Homebrew or any of the tools:
+
+```bash
+./scripts/build-dmg.sh
+```
+
+This creates `build/YT Downloader.dmg` (about 120 MB). It contains the app with **yt-dlp, ffmpeg, ffprobe and deno bundled inside**, an Applications shortcut to drag onto, and a "Read Me First" note. The recipient doesn't need to install anything else.
+
+- **Where the tools come from:** `scripts/fetch-tools.sh` downloads standalone builds of yt-dlp (GitHub), deno (GitHub) and ffmpeg/ffprobe ([martin-riedl.de](https://ffmpeg.martin-riedl.de)). It checks each against its publisher's SHA-256 checksum and caches them in `build/vendor`. Use `./scripts/build-dmg.sh --refresh` to pick up newer versions.
+- **yt-dlp updates itself:** on first launch the app unpacks yt-dlp into `~/Library/Application Support/YT Downloader`. It checks for a newer yt-dlp once a day; **YT Downloader > Check for yt-dlp Updates** checks right away.
+- **Apple silicon only:** the bundled tools are arm64 builds, so the DMG won't run on Intel Macs.
+- **First launch on someone else's Mac:** the app isn't signed with a paid Apple Developer ID, so macOS blocks it the first time. The recipient opens it once, clicks **Done**, then goes to **System Settings > Privacy & Security** and clicks **Open Anyway**. The "Read Me First" note in the DMG walks them through it. Removing this step requires an [Apple Developer Program](https://developer.apple.com/programs/) membership to sign and notarize the app.
+- **Licenses:** yt-dlp is public domain (Unlicense), deno is MIT, and the ffmpeg builds are GPL. If you distribute the DMG publicly, the GPL requires making ffmpeg's source available, for example by linking to [ffmpeg.org](https://ffmpeg.org/download.html) and the [build scripts](https://git.martin-riedl.de/ffmpeg/build-script).
+
 ## Using clips
 
 1. Load a video and turn on **Download only a clip**.
@@ -76,10 +92,13 @@ Sources/YTDownloader/
   PreviewViews.swift      Video player, trim slider, clip controls
   AppModel.swift          State, yt-dlp argument building, progress parsing
   Models.swift            yt-dlp JSON model, format options, time helpers
-  Tools.swift             Finding yt-dlp/ffmpeg, running processes
+  Tools.swift             Finding yt-dlp/ffmpeg (bundled or Homebrew), running processes
+  YtDlpUpdater.swift      Unpacking and auto-updating the bundled yt-dlp
   DebugHooks.swift        Debug-only automation used for testing
 scripts/
-  build-app.sh            Builds and packages the .app bundle
+  build-app.sh            Builds and packages the .app bundle (--bundle-tools to include the tools)
+  build-dmg.sh            Builds the shareable DMG with everything bundled
+  fetch-tools.sh          Downloads and verifies the standalone tools for bundling
   make-icon.swift         Draws the app icon
 ```
 

@@ -13,6 +13,9 @@ struct YTDownloaderApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) {
+                Button("Check for yt-dlp Updates…") { YtDlpUpdater.checkFromMenu() }
+            }
         }
     }
 }
@@ -22,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Needed when launched via `swift run` (no app bundle) so the window gets focus and a Dock icon.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        Task { await YtDlpUpdater.launchTasks() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
